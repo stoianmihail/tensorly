@@ -4,10 +4,10 @@ import tensorly as tl
 
 
 PREVIOUS_EINSUM = None
+LUMINA_PATH_CACHE = dict()
 OPT_EINSUM_PATH_CACHE = dict()
 CUQUANTUM_PATH_CACHE = dict()
 CUQUANTUM_HANDLE = None
-
 
 def use_default_einsum():
     """Revert to the original einsum for the current backend"""
@@ -17,6 +17,79 @@ def use_default_einsum():
         tl.backend.BackendManager.register_backend_method("einsum", PREVIOUS_EINSUM)
         PREVIOUS_EINSUM = None
 
+def use_lumina(optimize='iks'):
+    global PREVIOUS_EINSUM
+
+    try:
+        import opt_einsum as oe
+    except ImportError as error:
+        message = (
+            "Impossible to import opt-einsum.\n"
+            "First install it:\n"
+            "conda install opt_einsum -c conda-forge\n"
+            " or pip install opt_einsum"
+        )
+        raise ImportError(message) from error
+
+    # Import lumina
+    try:
+        import lumina.wrapper as lumina
+    except ImportError as error:
+        message = (
+            "Impossible to import lumina.\n"
+        )
+        raise ImportError(message) from error
+
+    class IKSOptimizer(oe.paths.PathOptimizer):
+        def __call__(self, inputs, output, size_dict, memory_limit=None):
+            print(f'%%%%%%%%%%%%%% IKSOptimizer %%%%%%%%%%%%%%')
+            return lumina.contraction_order(inputs, output, size_dict, 'iks')
+
+    class LinDPonIKSOptimizer(oe.paths.PathOptimizer):
+        def __call__(self, inputs, output, size_dict, memory_limit=None):
+            print(f'%%%%%%%%%%%%%% LinDP [IKS] %%%%%%%%%%%%%%')
+            return lumina.contraction_order(inputs, output, size_dict, 'lindp-iks')
+
+    class GooOptimizer(oe.paths.PathOptimizer):
+        def __call__(self, inputs, output, size_dict, memory_limit=None):
+            print(f'%%%%%%%%%%%%%% GOO %%%%%%%%%%%%%%')
+            return lumina.contraction_order(inputs, output, size_dict, 'goo')
+
+    class LinDPonGooOptimizer(oe.paths.PathOptimizer):
+        def __call__(self, inputs, output, size_dict, memory_limit=None):
+            print(f'%%%%%%%%%%%%%% LinDP [GOO] %%%%%%%%%%%%%%')
+            return lumina.contraction_order(inputs, output, size_dict, 'lindp-goo')
+
+    # The optimizers.
+    algorithms = {
+        'iks' : IKSOptimizer(),
+        'greedy' : 'greedy',
+        'lindp-iks' : LinDPonIKSOptimizer(),
+        'goo' : GooOptimizer(),
+        'lindp-goo' : LinDPonGooOptimizer()
+    }
+
+    def cached_einsum(equation, *args):
+        shapes = [tl.shape(arg) for arg in args]
+        key = equation + "," + ",".join(f"{s}" for s in shapes)
+        print(f'key={key}')
+        try:
+            print(f'expression found!')
+            expression = LUMINA_PATH_CACHE[key]
+            print(f'expression={expression}')
+        except KeyError:
+            print(f'[KeyError] not found!')
+            print(f'optimize={optimize}')
+            expression = oe.contract_expression(equation, *shapes, optimize=algorithms[optimize])
+            print(f'expression={expression}')
+            LUMINA_PATH_CACHE[key] = expression
+
+        return expression(*args)
+
+    if PREVIOUS_EINSUM is None:
+        PREVIOUS_EINSUM = tl.backend.current_backend().einsum
+
+    tl.backend.BackendManager.register_backend_method("einsum", cached_einsum)
 
 def use_opt_einsum(optimize="auto-hq"):
     """Plugin to use opt-einsum [1]_ to precompute (and cache) a better contraction path
@@ -68,10 +141,16 @@ def use_opt_einsum(optimize="auto-hq"):
     def cached_einsum(equation, *args):
         shapes = [tl.shape(arg) for arg in args]
         key = equation + "," + ",".join(f"{s}" for s in shapes)
+        print(f'key={key}')
         try:
+            print(f'expression found!')
             expression = OPT_EINSUM_PATH_CACHE[key]
+            print(f'expression={expression}')
         except KeyError:
+            print(f'[KeyError] not found!')
+            print(f'optimize={optimize}')
             expression = oe.contract_expression(equation, *shapes, optimize=optimize)
+            print(f'expression={expression}')
             OPT_EINSUM_PATH_CACHE[key] = expression
 
         return expression(*args)
