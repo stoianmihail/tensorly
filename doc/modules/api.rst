@@ -470,6 +470,7 @@ Automatically cache the optimal contraction path when using the `einsum` tensor 
     use_opt_einsum
     use_default_einsum
     use_cuquantum
+    use_lumina
 
 
 Experimental features (:mod:`tensorly.contrib`)
